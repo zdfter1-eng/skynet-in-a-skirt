@@ -1,0 +1,19 @@
+{
+  "name": "uprugost-bot-rag",
+  "main": "worker.js",
+  "compatibility_date": "2024-04-01",
+  "r2_buckets": [
+    { "binding": "FILES_BUCKET", "bucket_name": "uprugost-files" }
+  ],
+  "durable_objects": {
+    "bindings": [
+      { "name": "SOFIA_AGENT1", "class_name": "SofiaAgent" }
+    ]
+  },
+  "d1_databases": [
+    { "binding": "DB", "database_name": "uprugost-db", "database_id": "ЗАМЕНИ_НА_ТВОЙ_ID" }
+  ],
+  "migrations": [
+    { "tag": "v1", "new_classes": ["SofiaAgent"] }
+  ]
+}
