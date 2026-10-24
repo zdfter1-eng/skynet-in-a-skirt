@@ -3,8 +3,13 @@
 // ==========================================
 export async function transcribeVoice(env, audioBuffer) {
   try {
+    console.log("[WHISPER] buffer size:", audioBuffer.byteLength);
+
     if (!audioBuffer || audioBuffer.byteLength === 0) return "";
-    if (!env.CF_ACCOUNT_ID || !env.CF_API_TOKEN) return "";
+    if (!env.CF_ACCOUNT_ID || !env.CF_API_TOKEN) {
+      console.error("[WHISPER] CF_ACCOUNT_ID or CF_API_TOKEN missing!");
+      return "";
+    }
 
     const bytes = new Uint8Array(audioBuffer);
     let binary = "";
@@ -20,10 +25,18 @@ export async function transcribeVoice(env, audioBuffer) {
       body: JSON.stringify({ audio: base64Audio, task: "transcribe" }),
     });
 
-    if (!res.ok) return "";
+    console.log("[WHISPER] REST status:", res.status);
+
+    if (!res.ok) {
+      const errText = await res.text();
+      console.error("[WHISPER] REST error:", errText.slice(0, 300));
+      return "";
+    }
+
     const data = await res.json();
     return data.result?.text || data.text || "";
   } catch (e) {
+    console.error("[WHISPER] ERROR:", e.message);
     return "";
   }
 }
@@ -33,6 +46,8 @@ export async function transcribeVoice(env, audioBuffer) {
 // ==========================================
 export async function searchWeb(env, query) {
   try {
+    console.log("[WebSearch] Ищу:", query);
+    
     if (env.FIRECRAWL) {
       const res = await env.FIRECRAWL.fetch("https://workers-firecrawl/search", {
         method: "POST", headers: { "Content-Type": "application/json" },
@@ -64,7 +79,10 @@ export async function searchWeb(env, query) {
       return text.trim();
     }
     return "";
-  } catch (e) { return ""; }
+  } catch (e) { 
+    console.error("[WebSearch Error]", e);
+    return ""; 
+  }
 }
 
 // ==========================================
@@ -166,13 +184,11 @@ export async function processUploadedFile(env, fileBuffer, fileName, mimeType) {
     const slug = "file_" + Date.now();
     const basePath = `library/${folder}/${slug}`;
     
-    // Сохраняем оригинал
     await env.FILES_BUCKET.put(`${basePath}/original.txt`, fileBuffer);
     await env.FILES_BUCKET.put(`${basePath}/meta.json`, JSON.stringify({ 
       originalName: fileName, folder: folder, uploadedAt: new Date().toISOString(), size: fileBuffer.byteLength
     }));
 
-    // Извлекаем текст для RAG
     let textContent = "";
     if (mimeType === "text/plain" || fileName.endsWith(".txt") || fileName.endsWith(".md") || fileName.endsWith(".TXT")) {
         textContent = await new Response(fileBuffer).text();
@@ -200,7 +216,7 @@ export async function processUploadedFile(env, fileBuffer, fileName, mimeType) {
 }
 
 // ==========================================
-// ГЕНЕРАЦИЯ ВЫЖИМКИ (ОБРАБОТКА ВСЕГО ФАЙЛА ЗА РАЗ)
+// ГЕНЕРАЦИЯ ВЫЖИМКИ (для больших файлов)
 // ==========================================
 export async function generateExtract(env, folder, slug) {
   try {
@@ -223,9 +239,7 @@ export async function generateExtract(env, folder, slug) {
     let combinedSummary = `# Выжимка: ${slug}\n\n`;
     const startTime = Date.now();
     
-    // Обрабатываем все части, но следим за временем, чтобы не упасть по таймауту
     for (let i = 0; i < chunks.length; i++) {
-        // Если прошло 20 секунд (близко к лимиту воркера), сохраняем прогресс и выходим
         if (Date.now() - startTime > 20000) {
             combinedSummary += `\n## Часть ${i + 1} - ${chunks.length}\n(Обработка будет продолжена в фоне...)\n`;
             await env.FILES_BUCKET.put(`library/${folder}/${slug}/extract.md`, combinedSummary);
