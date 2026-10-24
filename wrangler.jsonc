@@ -1,19 +1,73 @@
 {
+  "$schema": "node_modules/wrangler/config-schema.json",
   "name": "uprugost-bot-rag",
   "main": "worker.js",
   "compatibility_date": "2024-04-01",
-  "r2_buckets": [
-    { "binding": "FILES_BUCKET", "bucket_name": "uprugost-files" }
+  "compatibility_flags": ["nodejs_compat"],
+
+  // --- Привязка AI (Workers AI) ---
+  "ai": {
+    "binding": "AI"
+  },
+
+  // --- Привязка D1 (SQLite) ---
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "uprugost-db",
+      "database_id": "ВСТАВЬ_СЮДА_СВОЙ_UUID_ИЗ_D1" // <-- Замени на свой ID
+    }
   ],
+
+  // --- Привязка R2 (Object Storage) ---
+  "r2_buckets": [
+    {
+      "binding": "FILES_BUCKET",
+      "bucket_name": "uprugost-files"
+    }
+  ],
+
+  // --- Привязка Vectorize (RAG для книг) ---
+  "vectorize": [
+    {
+      "binding": "VECTORIZE",
+      "index_name": "sofia-books"
+    }
+  ],
+
+  // --- Привязка Service Binding (для поиска в интернете) ---
+  "services": [
+    {
+      "binding": "FIRECRAWL",
+      "service": "workers-firecrawl"
+    }
+  ],
+
+  // --- Durable Objects (Сердце Софии) ---
   "durable_objects": {
     "bindings": [
-      { "name": "SOFIA_AGENT1", "class_name": "SofiaAgent" }
+      {
+        "name": "SOFIA_AGENT1",
+        "class_name": "SofiaAgent"
+      }
     ]
   },
-  "d1_databases": [
-    { "binding": "DB", "database_name": "uprugost-db", "database_id": "ЗАМЕНИ_НА_ТВОЙ_ID" }
-  ],
+
+  // --- Миграция для Durable Object ---
   "migrations": [
-    { "tag": "v1", "new_classes": ["SofiaAgent"] }
-  ]
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["SofiaAgent"]
+    }
+  ],
+
+  // --- Cron-триггер (каждую минуту) ---
+  "triggers": {
+    "crons": ["* * * * *"]
+  },
+
+  // --- Наблюдаемость (логи) ---
+  "observability": {
+    "enabled": true
+  }
 }
