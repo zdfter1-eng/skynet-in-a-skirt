@@ -2,7 +2,8 @@ import { initializeR2, getState, saveState } from './r2.js';
 import { callLLM } from './llm.js';
 import { SofiaAgent } from './agent.js';
 import { runReflection } from './reflection.js';
-import { processUploadedFile, searchWeb, transcribeVoice } from './library.js';
+import { processUploadedFile, searchWeb } from './library.js';
+import { handleVoice } from './voice.js';
 
 export { SofiaAgent };
 
@@ -50,11 +51,12 @@ export default {
 
       // === ОБРАБОТКА ГОЛОСОВЫХ ===
       if (update.message?.voice) {
+        console.log("[Voice] Получено голосовое сообщение");
         ctx.waitUntil(handleVoice(update.message, env, ctx));
         return new Response("OK");
       }
 
-      // === ОБРАБОТКА ДОКУМЕНТОВ (ВОТ ЭТОГО НЕ БЫЛО!) ===
+      // === ОБРАБОТКА ДОКУМЕНТОВ ===
       if (update.message?.document) {
         ctx.waitUntil(handleDocument(update.message, env, ctx));
         return new Response("OK");
@@ -157,40 +159,7 @@ async function writeDiaryEntry(env) {
 }
 
 // ==========================================
-// ГОЛОС
-// ==========================================
-async function handleVoice(message, env, ctx) {
-  const chatId = message.chat.id;
-  ctx.waitUntil(sendTelegram(env, chatId, "🎤 Распознаю..."));
-
-  try {
-    const fileRes = await fetch(`https://api.telegram.org/bot${env.BOT_TOKEN}/getFile?file_id=${message.voice.file_id}`);
-    const fileData = await fileRes.json();
-    if (!fileData.ok) throw new Error(`getFile: ${fileData.description}`);
-
-    const filePath = fileData.result.file_path;
-    const audioRes = await fetch(`https://api.telegram.org/file/bot${env.BOT_TOKEN}/${filePath}`);
-    const audioBuffer = await audioRes.arrayBuffer();
-
-    if (!audioBuffer || audioBuffer.byteLength === 0) throw new Error("Пустой аудиобуфер");
-
-    const text = await transcribeVoice(env, audioBuffer);
-
-    if (!text || text.trim().length === 0) {
-      ctx.waitUntil(sendTelegram(env, chatId, "⚠️ Не удалось распознать речь."));
-      return;
-    }
-
-    ctx.waitUntil(sendTelegram(env, chatId, `🎤 *Вы сказали:*\n_${text}_`));
-    await handleMessage({ chat: { id: chatId }, text: text.trim(), date: message.date }, env, ctx);
-  } catch (e) {
-    console.error("[Voice Error]", e);
-    ctx.waitUntil(sendTelegram(env, chatId, `⚠️ Ошибка: ${e.message}`));
-  }
-}
-
-// ==========================================
-// ДОКУМЕНТЫ (С ЛОГАМИ)
+// ДОКУМЕНТЫ (с RAG)
 // ==========================================
 async function handleDocument(message, env, ctx) {
   const chatId = message.chat.id;
@@ -206,7 +175,6 @@ async function handleDocument(message, env, ctx) {
   ctx.waitUntil(sendTelegram(env, chatId, "📥 Сохраняю файл..."));
   
   try {
-    console.log("[Document] Скачиваю файл из Telegram...");
     const fileRes = await fetch(`https://api.telegram.org/bot${env.BOT_TOKEN}/getFile?file_id=${doc.file_id}`);
     const fileData = await fileRes.json();
     const downloadUrl = `https://api.telegram.org/file/bot${env.BOT_TOKEN}/${fileData.result.file_path}`;
@@ -214,7 +182,6 @@ async function handleDocument(message, env, ctx) {
     const arrayBuffer = await response.arrayBuffer();
     
     console.log("[Document] Файл скачан, размер буфера:", arrayBuffer.byteLength);
-    console.log("[Document] Отправляю в processUploadedFile...");
 
     const result = await processUploadedFile(env, arrayBuffer, doc.file_name, doc.mime_type);
     
@@ -288,7 +255,6 @@ async function searchInTxtFiles(env, query) {
     let foundText = "";
     const queryLower = query.toLowerCase();
     const foundInFiles = [];
-    const checkedFiles = [];
 
     for (const prefix of prefixes) {
       const list = await env.FILES_BUCKET.list({ prefix, limit: 100 });
@@ -298,8 +264,6 @@ async function searchInTxtFiles(env, query) {
         if (obj.size === 0) continue;
 
         if (obj.key.endsWith(".txt") || obj.key.endsWith(".TXT")) {
-          checkedFiles.push(obj.key);
-
           const file = await env.FILES_BUCKET.get(obj.key);
           if (file) {
             const buffer = await file.arrayBuffer();
@@ -522,9 +486,9 @@ async function processFileTags(env, rawAnswer) {
 }
 
 // ==========================================
-// ОСНОВНАЯ ОБРАБОТКА
+// ОСНОВНАЯ ОБРАБОТКА (ЭКСПОРТИРУЕМАЯ!)
 // ==========================================
-async function handleMessage(message, env, ctx) {
+export async function handleMessage(message, env, ctx) {
   const chatId = message.chat.id;
   const text = message.text;
   let state = await getState(env) || {};
