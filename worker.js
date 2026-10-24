@@ -48,16 +48,19 @@ export default {
         return new Response("OK");
       }
 
+      // === ОБРАБОТКА ГОЛОСОВЫХ ===
       if (update.message?.voice) {
         ctx.waitUntil(handleVoice(update.message, env, ctx));
         return new Response("OK");
       }
 
+      // === ОБРАБОТКА ДОКУМЕНТОВ (ВОТ ЭТОГО НЕ БЫЛО!) ===
       if (update.message?.document) {
         ctx.waitUntil(handleDocument(update.message, env, ctx));
         return new Response("OK");
       }
 
+      // === ОБРАБОТКА ТЕКСТА ===
       if (update.message?.text) {
         ctx.waitUntil(handleMessage(update.message, env, ctx));
       }
@@ -186,21 +189,36 @@ async function handleVoice(message, env, ctx) {
   }
 }
 
+// ==========================================
+// ДОКУМЕНТЫ (С ЛОГАМИ)
+// ==========================================
 async function handleDocument(message, env, ctx) {
   const chatId = message.chat.id;
   const doc = message.document;
+  
+  console.log("[Document] Получен файл:", doc.file_name, "размер:", doc.file_size);
+
   if (doc.file_size > 20 * 1024 * 1024) {
     ctx.waitUntil(sendTelegram(env, chatId, "❌ Файл слишком большой."));
     return;
   }
+  
   ctx.waitUntil(sendTelegram(env, chatId, "📥 Сохраняю файл..."));
+  
   try {
+    console.log("[Document] Скачиваю файл из Telegram...");
     const fileRes = await fetch(`https://api.telegram.org/bot${env.BOT_TOKEN}/getFile?file_id=${doc.file_id}`);
     const fileData = await fileRes.json();
     const downloadUrl = `https://api.telegram.org/file/bot${env.BOT_TOKEN}/${fileData.result.file_path}`;
     const response = await fetch(downloadUrl);
     const arrayBuffer = await response.arrayBuffer();
+    
+    console.log("[Document] Файл скачан, размер буфера:", arrayBuffer.byteLength);
+    console.log("[Document] Отправляю в processUploadedFile...");
+
     const result = await processUploadedFile(env, arrayBuffer, doc.file_name, doc.mime_type);
+    
+    console.log("[Document] Результат:", result);
 
     if (result.success) {
       let state = await getState(env) || {};
@@ -212,7 +230,10 @@ async function handleDocument(message, env, ctx) {
     } else {
       ctx.waitUntil(sendTelegram(env, chatId, `❌ Ошибка: ${result.error}`));
     }
-  } catch (e) { ctx.waitUntil(sendTelegram(env, chatId, `❌ Ошибка: ${e.message}`)); }
+  } catch (e) { 
+    console.error("[Document Error]", e);
+    ctx.waitUntil(sendTelegram(env, chatId, `❌ Ошибка: ${e.message}`)); 
+  }
 }
 
 // ==========================================
@@ -259,11 +280,11 @@ async function buildPersonalityContext(env) {
 }
 
 // ==========================================
-// ПОИСК ПО TXT-ФАЙЛАМ
+// ПОИСК ПО TXT-ФАЙЛАМ (для архива)
 // ==========================================
 async function searchInTxtFiles(env, query) {
   try {
-    const prefixes = ["", "library/", "library/books/", "library/archive/"];
+    const prefixes = ["", "library/archive/"];
     let foundText = "";
     const queryLower = query.toLowerCase();
     const foundInFiles = [];
@@ -303,9 +324,9 @@ async function searchInTxtFiles(env, query) {
                 fileText += `[${obj.key}]: ...${content.slice(start, end)}...\n\n`;
                 index = contentLower.indexOf(word, index + 1);
                 fileFound = true;
-                if (fileText.length > 4000) break;
+                if (fileText.length > 3000) break;
               }
-              if (fileText.length > 4000) break;
+              if (fileText.length > 3000) break;
             }
 
             if (fileFound) {
@@ -314,17 +335,57 @@ async function searchInTxtFiles(env, query) {
             }
           }
         }
-        if (foundText.length > 20000) break;
+        if (foundText.length > 10000) break;
       }
-      if (foundText.length > 20000) break;
+      if (foundText.length > 10000) break;
     }
 
     if (foundText) {
-      return `=== НАЙДЕНО В TXT-ФАЙЛАХ ===\n${foundText}\n=== КОНЕЦ ===`;
+      return `=== НАЙДЕНО В АРХИВЕ ===\n${foundText}\n=== КОНЕЦ ===`;
     }
     return "";
   } catch (e) {
     console.error("[TXT Search Error]", e);
+    return "";
+  }
+}
+
+// ==========================================
+// RAG-ПОИСК ПО КНИГАМ (Vectorize)
+// ==========================================
+async function searchBooksRAG(env, query) {
+  if (!env.VECTORIZE) {
+    console.log("[RAG] VECTORIZE binding не найден, RAG-поиск пропущен.");
+    return "";
+  }
+  
+  try {
+    const embedding = await env.AI.run("@cf/baai/bge-base-en-v1.5", {
+      text: query
+    });
+    
+    const results = await env.VECTORIZE.query(embedding.data[0], {
+      topK: 5,
+      returnMetadata: "all"
+    });
+    
+    if (!results.matches || results.matches.length === 0) {
+      console.log("[RAG] Ничего не найдено в книгах.");
+      return "";
+    }
+    
+    let context = "=== ФРАГМЕНТЫ ИЗ КНИГ (RAG) ===\n";
+    for (const match of results.matches) {
+      if (match.score > 0.5) {
+        context += `[${match.metadata.source}]: ...${match.metadata.text}...\n\n`;
+      }
+    }
+    context += "=== КОНЕЦ ФРАГМЕНТОВ ===\n";
+    
+    console.log(`[RAG] Найдено ${results.matches.length} кусков, релевантных запросу.`);
+    return context;
+  } catch (e) {
+    console.error("[RAG Search Error]", e);
     return "";
   }
 }
@@ -386,7 +447,7 @@ async function getLastUploadedFile(env) {
 }
 
 // ==========================================
-// ОБРАБОТКА ТЕГОВ УПРАВЛЕНИЯ ФАЙЛАМИ (ФИГУРНЫЕ СКОБКИ)
+// ОБРАБОТКА ТЕГОВ УПРАВЛЕНИЯ ФАЙЛАМИ
 // ==========================================
 async function processFileTags(env, rawAnswer) {
   let processedAnswer = rawAnswer;
@@ -401,7 +462,6 @@ async function processFileTags(env, rawAnswer) {
     "self/lessons.md"
   ];
 
-  // 1. Обработка {{READ: файл}}
   const readRegex = /\{\{READ:\s*([^\}]+)\}\}/gi;
   let readMatch;
   while ((readMatch = readRegex.exec(rawAnswer)) !== null) {
@@ -418,13 +478,12 @@ async function processFileTags(env, rawAnswer) {
     processedAnswer = processedAnswer.replace(readMatch[0], "");
   }
 
-  // 2. Обработка {{APPEND: файл | текст}}
   const appendRegex = /\{\{APPEND:\s*([^|]+)\|\s*([\s\S]*?)\}\}/gi;
   let appendMatch;
   while ((appendMatch = appendRegex.exec(rawAnswer)) !== null) {
     const fileName = appendMatch[1].trim();
     const textToAppend = appendMatch[2].trim();
-    
+
     if (allowedFiles.includes(fileName)) {
       try {
         const obj = await env.FILES_BUCKET.get(fileName);
@@ -434,23 +493,22 @@ async function processFileTags(env, rawAnswer) {
         } else if (fileName === "self/lessons.md") {
           current = "# Мои выводы (уроки)\n\n";
         }
-        
+
         const newContent = current + `\n\n${textToAppend}`;
         await env.FILES_BUCKET.put(fileName, newContent);
-        
+
         fileStatus += `\n=== УСПЕШНО ДОПИСАНО В ${fileName} ===\nТекущее содержимое файла теперь:\n${newContent.slice(-500)}\n`;
       } catch (e) { console.error(`[File Append Error] ${fileName}:`, e); }
     }
     processedAnswer = processedAnswer.replace(appendMatch[0], "");
   }
 
-  // 3. Обработка {{OVERWRITE: файл | текст}}
   const overwriteRegex = /\{\{OVERWRITE:\s*([^|]+)\|\s*([\s\S]*?)\}\}/gi;
   let overwriteMatch;
   while ((overwriteMatch = overwriteRegex.exec(rawAnswer)) !== null) {
     const fileName = overwriteMatch[1].trim();
     const newText = overwriteMatch[2].trim();
-    
+
     if (allowedFiles.includes(fileName)) {
       try {
         await env.FILES_BUCKET.put(fileName, newText);
@@ -829,6 +887,14 @@ async function handleMessage(message, env, ctx) {
     }
   }
 
+  // === RAG-ПОИСК ПО КНИГАМ ===
+  const ragContext = await searchBooksRAG(env, text);
+  if (ragContext) {
+    context += ragContext + "\n\n";
+    console.log("[Context] RAG-контекст добавлен:", ragContext.length, "символов");
+  }
+
+  // === ПОИСК ПО АРХИВУ (TXT) ===
   if (text.length > 5) {
     console.log("[TXT Search] Ищу по txt-файлам:", text);
     const foundContext = await searchInTxtFiles(env, text);
@@ -869,7 +935,6 @@ async function handleMessage(message, env, ctx) {
   const fileResult = await processFileTags(env, rawAnswer);
   rawAnswer = fileResult.cleanAnswer;
 
-  // Выводим статус в консоль, но не делаем второй запрос к LLM
   if (fileResult.fileStatus) {
     console.log("[File Status]", fileResult.fileStatus);
   }
@@ -923,12 +988,10 @@ async function handleMessage(message, env, ctx) {
   // === РАЗДЕЛЯЕМ МЫСЛИ И ОТВЕТ ===
   const { thoughts, answer } = splitThoughts(rawAnswer);
 
-  // 1) Сначала — размышления
   if (thoughts) {
     await sendTelegram(env, chatId, formatThoughtsBlock(thoughts));
   }
 
-  // 2) Затем — сам ответ (если пусто, отправляем заглушку)
   const finalAnswer = answer.trim() || "Я здесь. 🤍";
   await sendTelegram(env, chatId, finalAnswer);
 }
